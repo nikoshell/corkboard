@@ -2,26 +2,23 @@ import { serve } from "https://deno.land/std@0.208.0/http/server.ts";
 import { STATUS_CODE } from "https://deno.land/std@0.208.0/http/status.ts"; 
 
 // Types
-interface Tweet {
+interface Note {
   id: string;
   displayName: string;
   handle?: string;
   content: string;
-  imageData?: string; // base64 encoded image
-  imageType?: string; // image mime type
   timestamp: number;
   reactions: Record<string, number>;
 }
 
-interface TweetInput {
+interface NoteInput {
   displayName: string;
   handle?: string;
   content: string;
-  image?: File;
 }
 
 interface ReactionInput {
-  tweetId: string;
+  noteId: string;
   reaction: string;
 }
 
@@ -51,15 +48,6 @@ function generateId(): string {
   return crypto.randomUUID();
 }
 
-async function resizeImage(imageFile: File): Promise<{ data: string; type: string }> {
-  const arrayBuffer = await imageFile.arrayBuffer();
-  const base64 = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)));
-  return {
-    data: base64,
-    type: imageFile.type
-  };
-}
-
 function initializeReactions(): Record<string, number> {
   const reactions: Record<string, number> = {};
   REACTIONS.forEach(reaction => {
@@ -69,17 +57,16 @@ function initializeReactions(): Record<string, number> {
 }
 
 // API handlers
-async function createTweet(request: Request): Promise<Response> {
-  console.log("📝 Creating new tweet...");
+async function createNote(request: Request): Promise<Response> {
+  console.log("📝 Creating new note...");
   try {
     console.log("📋 Parsing form data...");
     const formData = await request.formData();
     const displayName = formData.get("displayName") as string;
     const handle = formData.get("handle") as string;
     const content = formData.get("content") as string;
-    const imageFile = formData.get("image") as File;
 
-    console.log(`📊 Form data received: displayName="${displayName}", handle="${handle}", content length=${content?.length || 0}, image=${imageFile ? `${imageFile.name} (${imageFile.size} bytes)` : 'none'}`);
+    console.log(`📊 Form data received: displayName="${displayName}", handle="${handle}", content length=${content?.length || 0}`);
 
     if (!displayName || !content) {
       console.log("❌ Validation failed: missing displayName or content");
@@ -89,9 +76,9 @@ async function createTweet(request: Request): Promise<Response> {
       );
     }
 
-    const tweetId = generateId();
-    const tweet: Tweet = {
-      id: tweetId,
+    const noteId = generateId();
+    const note: Note = {
+      id: noteId,
       displayName,
       handle: handle || undefined,
       content,
@@ -99,59 +86,35 @@ async function createTweet(request: Request): Promise<Response> {
       reactions: initializeReactions()
     };
 
-    console.log(`🆔 Generated tweet ID: ${tweetId}`);
-
-    // Handle image if provided
-    if (imageFile && imageFile.size > 0) {
-      console.log(`🖼️  Processing image: ${imageFile.name} (${imageFile.type}, ${imageFile.size} bytes)`);
-      if (!imageFile.type.startsWith("image/")) {
-        console.log(`❌ Invalid file type: ${imageFile.type}`);
-        return new Response(
-          JSON.stringify({ error: "File must be an image" }),
-          { status: STATUS_CODE.BadRequest, headers: { "Content-Type": "application/json" } }
-        );
-      }
-      try {
-        const { data, type } = await resizeImage(imageFile);
-        tweet.imageData = data;
-        tweet.imageType = type;
-        console.log(`✅ Image processed successfully: ${type}, ${data.length} chars base64`);
-      } catch (imageError) {
-        console.error("❌ Image processing failed:", imageError);
-        return new Response(
-          JSON.stringify({ error: "Failed to process image", details: imageError.message }),
-          { status: STATUS_CODE.InternalServerError, headers: { "Content-Type": "application/json" } }
-        );
-      }
-    }
+    console.log(`🆔 Generated note ID: ${noteId}`);
 
     // Store in KV
-    console.log("💾 Storing tweet in KV database...");
+    console.log("💾 Storing note in KV database...");
     try {
-      await kv.set(["tweets", tweet.id], tweet);
-      console.log("✅ Tweet stored successfully in KV");
+      await kv.set(["notes", note.id], note);
+      console.log("✅ Note stored successfully in KV");
     } catch (kvError) {
       console.error("❌ KV storage failed:", kvError);
       return new Response(
-        JSON.stringify({ error: "Failed to store tweet", details: kvError.message }),
+        JSON.stringify({ error: "Failed to store note", details: kvError.message }),
         { status: STATUS_CODE.InternalServerError, headers: { "Content-Type": "application/json" } }
       );
     }
 
     // Broadcast over WebSocket
-    broadcast({ type: "tweet-created", data: tweet });
+    broadcast({ type: "note-created", data: note });
 
-    console.log(`🎉 Tweet created successfully: ${tweet.id}`);
+    console.log(`🎉 Note created successfully: ${note.id}`);
     return new Response(
-      JSON.stringify(tweet),
+      JSON.stringify(note),
       { status: STATUS_CODE.Created, headers: { "Content-Type": "application/json" } }
     );
   } catch (error) {
-    console.error("❌ Failed to create tweet:", error);
+    console.error("❌ Failed to create note:", error);
     console.error("Stack trace:", error.stack);
     return new Response(
       JSON.stringify({
-        error: "Failed to create tweet",
+        error: "Failed to create note",
         details: error.message,
         timestamp: new Date().toISOString()
       }),
@@ -160,31 +123,31 @@ async function createTweet(request: Request): Promise<Response> {
   }
 }
 
-async function getTweets(): Promise<Response> {
-  console.log("📋 Fetching all tweets...");
+async function getNotes(): Promise<Response> {
+  console.log("📋 Fetching all notes...");
   try {
-    const tweets: Tweet[] = [];
-    const iter = kv.list({ prefix: ["tweets"] });
+    const notes: Note[] = [];
+    const iter = kv.list({ prefix: ["notes"] });
     console.log("🔍 Iterating through KV entries...");
     let count = 0;
     for await (const entry of iter) {
-      tweets.push(entry.value as Tweet);
+      notes.push(entry.value as Note);
       count++;
     }
-    console.log(`📊 Found ${count} tweets in database`);
-    tweets.sort((a, b) => b.timestamp - a.timestamp);
-    console.log("🔄 Tweets sorted by timestamp (newest first)");
-    console.log("✅ Tweets fetched successfully");
+    console.log(`📊 Found ${count} notes in database`);
+    notes.sort((a, b) => b.timestamp - a.timestamp);
+    console.log("🔄 Notes sorted by timestamp (newest first)");
+    console.log("✅ Notes fetched successfully");
     return new Response(
-      JSON.stringify(tweets),
+      JSON.stringify(notes),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (error) {
-    console.error("❌ Failed to get tweets:", error);
+    console.error("❌ Failed to get notes:", error);
     console.error("Stack trace:", error.stack);
     return new Response(
       JSON.stringify({
-        error: "Failed to get tweets",
+        error: "Failed to get notes",
         details: error.message,
         timestamp: new Date().toISOString()
       }),
@@ -194,17 +157,17 @@ async function getTweets(): Promise<Response> {
 }
 
 async function addReaction(request: Request): Promise<Response> {
-  console.log("👍 Adding reaction to tweet...");
+  console.log("👍 Adding reaction to note...");
   try {
     console.log("📋 Parsing reaction request body...");
     const body = await request.json() as ReactionInput;
-    const { tweetId, reaction } = body;
-    console.log(`📊 Reaction data: tweetId="${tweetId}", reaction="${reaction}"`);
+    const { noteId, reaction } = body;
+    console.log(`📊 Reaction data: noteId="${noteId}", reaction="${reaction}"`);
 
-    if (!tweetId || !reaction) {
-      console.log("❌ Validation failed: missing tweetId or reaction");
+    if (!noteId || !reaction) {
+      console.log("❌ Validation failed: missing noteId or reaction");
       return new Response(
-        JSON.stringify({ error: "tweetId and reaction are required" }),
+        JSON.stringify({ error: "noteId and reaction are required" }),
         { status: STATUS_CODE.BadRequest, headers: { "Content-Type": "application/json" } }
       );
     }
@@ -217,24 +180,24 @@ async function addReaction(request: Request): Promise<Response> {
       );
     }
 
-    const tweetEntry = await kv.get(["tweets", tweetId]);
-    if (!tweetEntry.value) {
-      console.log(`❌ Tweet not found: ${tweetId}`);
+    const noteEntry = await kv.get(["notes", noteId]);
+    if (!noteEntry.value) {
+      console.log(`❌ Note not found: ${noteId}`);
       return new Response(
-        JSON.stringify({ error: "Tweet not found" }),
+        JSON.stringify({ error: "Note not found" }),
         { status: STATUS_CODE.NotFound, headers: { "Content-Type": "application/json" } }
       );
     }
 
-    const tweet = tweetEntry.value as Tweet;
-    const oldCount = tweet.reactions[reaction] || 0;
-    tweet.reactions[reaction] = oldCount + 1;
+    const note = noteEntry.value as Note;
+    const oldCount = note.reactions[reaction] || 0;
+    note.reactions[reaction] = oldCount + 1;
 
     // Update in KV
-    console.log("💾 Updating tweet in KV database...");
+    console.log("💾 Updating note in KV database...");
     try {
-      await kv.set(["tweets", tweetId], tweet);
-      console.log("✅ Tweet updated successfully in KV");
+      await kv.set(["notes", noteId], note);
+      console.log("✅ Note updated successfully in KV");
     } catch (kvError) {
       console.error("❌ KV update failed:", kvError);
       return new Response(
@@ -243,12 +206,12 @@ async function addReaction(request: Request): Promise<Response> {
       );
     }
 
-    // Broadcast updated tweet
-    broadcast({ type: "reaction-added", data: tweet });
+    // Broadcast updated note
+    broadcast({ type: "reaction-added", data: note });
 
-    console.log(`🎉 Reaction added successfully to tweet: ${tweetId}`);
+    console.log(`🎉 Reaction added successfully to note: ${noteId}`);
     return new Response(
-      JSON.stringify(tweet),
+      JSON.stringify(note),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (error) {
@@ -265,8 +228,8 @@ async function addReaction(request: Request): Promise<Response> {
   }
 }
 
-async function importTweets(request: Request): Promise<Response> {
-  console.log("📥 Importing tweets from NDJSON...");
+async function importNotes(request: Request): Promise<Response> {
+  console.log("📥 Importing notes from NDJSON...");
   try {
     const body = await request.text();
     const lines = body.trim().split('\n');
@@ -276,18 +239,16 @@ async function importTweets(request: Request): Promise<Response> {
     for (const [index, line] of lines.entries()) {
       if (!line.trim()) continue;
       try {
-        const tweetData = JSON.parse(line);
-        const tweet: Tweet = {
-          id: tweetData.id || generateId(),
-          displayName: tweetData.displayName,
-          handle: tweetData.handle,
-          content: tweetData.content,
-          imageData: tweetData.imageData,
-          imageType: tweetData.imageType,
-          timestamp: tweetData.timestamp || Date.now(),
-          reactions: tweetData.reactions || initializeReactions()
+        const noteData = JSON.parse(line);
+        const note: Note = {
+          id: noteData.id || generateId(),
+          displayName: noteData.displayName,
+          handle: noteData.handle,
+          content: noteData.content,
+          timestamp: noteData.timestamp || Date.now(),
+          reactions: noteData.reactions || initializeReactions()
         };
-        await kv.set(["tweets", tweet.id], tweet);
+        await kv.set(["notes", note.id], note);
         imported++;
       } catch (lineError) {
         failed++;
@@ -296,65 +257,41 @@ async function importTweets(request: Request): Promise<Response> {
     }
     console.log(`🎉 Import completed: ${imported} successful, ${failed} failed`);
     return new Response(
-      JSON.stringify({ message: `Imported ${imported} tweets`, successful: imported, failed: failed }),
+      JSON.stringify({ message: `Imported ${imported} notes`, successful: imported, failed: failed }),
       { headers: { "Content-Type": "application/json" } }
     );
   } catch (error) {
-    console.error("❌ Failed to import tweets:", error);
+    console.error("❌ Failed to import notes:", error);
     return new Response(
-      JSON.stringify({ error: "Failed to import tweets", details: error.message }),
+      JSON.stringify({ error: "Failed to import notes", details: error.message }),
       { status: STATUS_CODE.InternalServerError, headers: { "Content-Type": "application/json" } }
     );
   }
 }
 
-async function exportTweets(): Promise<Response> {
-  console.log("📤 Exporting tweets to NDJSON...");
+async function exportNotes(): Promise<Response> {
+  console.log("📤 Exporting notes to NDJSON...");
   try {
-    const tweets: Tweet[] = [];
-    const iter = kv.list({ prefix: ["tweets"] });
+    const notes: Note[] = [];
+    const iter = kv.list({ prefix: ["notes"] });
     for await (const entry of iter) {
-      tweets.push(entry.value as Tweet);
+      notes.push(entry.value as Note);
     }
-    tweets.sort((a, b) => a.timestamp - b.timestamp);
-    const ndjson = tweets.map(tweet => JSON.stringify(tweet)).join('\n');
+    notes.sort((a, b) => a.timestamp - b.timestamp);
+    const ndjson = notes.map(note => JSON.stringify(note)).join('\n');
     console.log("✅ Export completed successfully");
     return new Response(ndjson, {
       headers: {
         "Content-Type": "application/x-ndjson",
-        "Content-Disposition": "attachment; filename=tweets.ndjson"
+        "Content-Disposition": "attachment; filename=notes.ndjson"
       }
     });
   } catch (error) {
-    console.error("❌ Failed to export tweets:", error);
+    console.error("❌ Failed to export notes:", error);
     return new Response(
-      JSON.stringify({ error: "Failed to export tweets", details: error.message }),
+      JSON.stringify({ error: "Failed to export notes", details: error.message }),
       { status: STATUS_CODE.InternalServerError, headers: { "Content-Type": "application/json" } }
     );
-  }
-}
-
-async function getImage(request: Request, tweetId: string): Promise<Response> {
-  const tweetEntry = await kv.get(["tweets", tweetId]);
-  if (!tweetEntry.value) {
-    return new Response("Tweet not found", { status: STATUS_CODE.NotFound });
-  }
-  const tweet = tweetEntry.value as Tweet;
-  if (!tweet.imageData || !tweet.imageType) {
-    return new Response("Image not found", { status: STATUS_CODE.NotFound });
-  }
-
-  try {
-    const imageBytes = Uint8Array.from(atob(tweet.imageData), c => c.charCodeAt(0));
-    return new Response(imageBytes, {
-      headers: {
-        "Content-Type": tweet.imageType,
-        "Cache-Control": "public, max-age=3600"
-      }
-    });
-  } catch (decodeError) {
-    console.error("❌ Failed to decode base64 image:", decodeError);
-    return new Response("Failed to decode image", { status: STATUS_CODE.InternalServerError });
   }
 }
 
@@ -391,21 +328,18 @@ async function handleRequest(request: Request): Promise<Response> {
   let response: Response;
 
   try {
-    if (request.method === "POST" && path === "/api/tweets") {
-      response = await createTweet(request);
-    } else if (request.method === "GET" && path === "/api/tweets") {
-      response = await getTweets();
+    if (request.method === "POST" && path === "/api/notes") {
+      response = await createNote(request);
+    } else if (request.method === "GET" && path === "/api/notes") {
+      response = await getNotes();
     } else if (request.method === "POST" && path === "/api/reactions") {
       response = await addReaction(request);
     } else if (request.method === "GET" && path === "/api/reactions") {
       response = await getReactions();
     } else if (request.method === "POST" && path === "/api/import") {
-      response = await importTweets(request);
+      response = await importNotes(request);
     } else if (request.method === "GET" && path === "/api/export") {
-      response = await exportTweets();
-    } else if (request.method === "GET" && path.startsWith("/api/images/")) {
-      const tweetId = path.split("/").pop();
-      response = tweetId ? await getImage(request, tweetId) : new Response("Invalid image path", { status: STATUS_CODE.BadRequest });
+      response = await exportNotes();
     } else {
       response = new Response("Not Found", { status: STATUS_CODE.NotFound });
     }
@@ -426,15 +360,14 @@ async function handleRequest(request: Request): Promise<Response> {
 }
 
 // Start server
-console.log("🚀 Twitter-like API server starting...");
+console.log("🚀 Note-taking API server starting...");
 console.log("📚 Available endpoints:");
-console.log("  POST /api/tweets - Create a new tweet");
-console.log("  GET  /api/tweets - Get all tweets");
-console.log("  POST /api/reactions - Add reaction to tweet");
+console.log("  POST /api/notes - Create a new note");
+console.log("  GET  /api/notes - Get all notes");
+console.log("  POST /api/reactions - Add reaction to note");
 console.log("  GET  /api/reactions - Get available reactions");
-console.log("  POST /api/import - Import tweets from NDJSON");
-console.log("  GET  /api/export - Export tweets as NDJSON");
-console.log("  GET  /api/images/:tweetId - Get tweet image");
+console.log("  POST /api/import - Import notes from NDJSON");
+console.log("  GET  /api/export - Export notes as NDJSON");
 console.log("  WS   /api/ws - Real-time updates via WebSocket");
 
 await serve(handleRequest, { port: 8000 });
