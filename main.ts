@@ -310,7 +310,7 @@ async function handleRequest(request: Request): Promise<Response> {
     const { response, socket } = Deno.upgradeWebSocket(request);
     clients.add(socket);
 
-    socket.onClose = () => clients.delete(socket);
+    socket.onclose = () => clients.delete(socket);
     return response;
   }
 
