@@ -22,10 +22,24 @@ interface ReactionInput {
   reaction: string;
 }
 
+interface DeleteRequest {
+  token: string;
+  noteId?: string; // Optional - if not provided, deletes all notes
+}
+
 // Available reactions
 const REACTIONS = [
   "👍", "❤️", "😂", "😮", "😢", "😡", "🔥", "🚀", "👏", "🎉"
 ];
+
+// Admin token from environment variable
+const ADMIN_TOKEN = Deno.env.get("ADMIN_TOKEN");
+
+if (!ADMIN_TOKEN) {
+  console.warn("⚠️  WARNING: ADMIN_TOKEN environment variable not set. Admin functions will be disabled.");
+} else {
+  console.log("🔐 Admin authentication enabled");
+}
 
 // Initialize KV database
 const kv = await Deno.openKv();
@@ -54,6 +68,29 @@ function initializeReactions(): Record<string, number> {
     reactions[reaction] = 0;
   });
   return reactions;
+}
+
+function isValidAdminToken(token: string): boolean {
+  if (!ADMIN_TOKEN) {
+    return false;
+  }
+  return token === ADMIN_TOKEN;
+}
+
+function extractAuthToken(request: Request): string | null {
+  // Try to get token from Authorization header (Bearer token)
+  const authHeader = request.headers.get("Authorization");
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    return authHeader.substring(7);
+  }
+  
+  // Try to get token from X-Admin-Token header
+  const tokenHeader = request.headers.get("X-Admin-Token");
+  if (tokenHeader) {
+    return tokenHeader;
+  }
+  
+  return null;
 }
 
 // API handlers
@@ -228,6 +265,104 @@ async function addReaction(request: Request): Promise<Response> {
   }
 }
 
+async function deleteNote(request: Request): Promise<Response> {
+  console.log("🗑️  Processing delete request...");
+  
+  if (!ADMIN_TOKEN) {
+    console.log("❌ Admin functionality disabled - no ADMIN_TOKEN set");
+    return new Response(
+      JSON.stringify({ error: "Admin functionality not available" }),
+      { status: STATUS_CODE.ServiceUnavailable, headers: { "Content-Type": "application/json" } }
+    );
+  }
+
+  try {
+    // Extract token from request
+    const token = extractAuthToken(request);
+    
+    if (!token) {
+      console.log("❌ No authentication token provided");
+      return new Response(
+        JSON.stringify({ error: "Authentication token required. Provide token via Authorization header (Bearer) or X-Admin-Token header." }),
+        { status: STATUS_CODE.Unauthorized, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    if (!isValidAdminToken(token)) {
+      console.log("❌ Invalid authentication token");
+      return new Response(
+        JSON.stringify({ error: "Invalid authentication token" }),
+        { status: STATUS_CODE.Forbidden, headers: { "Content-Type": "application/json" } }
+      );
+    }
+
+    // Parse request body to get noteId (if provided)
+    let noteId: string | undefined;
+    try {
+      const body = await request.json();
+      noteId = body.noteId;
+    } catch {
+      // If no body or invalid JSON, we'll delete all notes
+    }
+
+    if (noteId) {
+      // Delete specific note
+      console.log(`🗑️  Deleting specific note: ${noteId}`);
+      
+      const noteEntry = await kv.get(["notes", noteId]);
+      if (!noteEntry.value) {
+        console.log(`❌ Note not found: ${noteId}`);
+        return new Response(
+          JSON.stringify({ error: "Note not found" }),
+          { status: STATUS_CODE.NotFound, headers: { "Content-Type": "application/json" } }
+        );
+      }
+
+      await kv.delete(["notes", noteId]);
+      
+      // Broadcast deletion
+      broadcast({ type: "note-deleted", data: { noteId } });
+      
+      console.log(`✅ Note deleted successfully: ${noteId}`);
+      return new Response(
+        JSON.stringify({ message: "Note deleted successfully", noteId }),
+        { headers: { "Content-Type": "application/json" } }
+      );
+    } else {
+      // Delete all notes
+      console.log("🗑️  Deleting ALL notes...");
+      
+      let deletedCount = 0;
+      const iter = kv.list({ prefix: ["notes"] });
+      
+      for await (const entry of iter) {
+        await kv.delete(entry.key);
+        deletedCount++;
+      }
+      
+      // Broadcast mass deletion
+      broadcast({ type: "all-notes-deleted", data: { deletedCount } });
+      
+      console.log(`✅ All notes deleted successfully. Count: ${deletedCount}`);
+      return new Response(
+        JSON.stringify({ message: "All notes deleted successfully", deletedCount }),
+        { headers: { "Content-Type": "application/json" } }
+      );
+    }
+  } catch (error) {
+    console.error("❌ Failed to delete note(s):", error);
+    console.error("Stack trace:", error.stack);
+    return new Response(
+      JSON.stringify({
+        error: "Failed to delete note(s)",
+        details: error.message,
+        timestamp: new Date().toISOString()
+      }),
+      { status: STATUS_CODE.InternalServerError, headers: { "Content-Type": "application/json" } }
+    );
+  }
+}
+
 async function importNotes(request: Request): Promise<Response> {
   console.log("📥 Importing notes from NDJSON...");
   try {
@@ -318,7 +453,7 @@ async function handleRequest(request: Request): Promise<Response> {
   const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Admin-Token",
   };
 
   if (request.method === "OPTIONS") {
@@ -340,6 +475,8 @@ async function handleRequest(request: Request): Promise<Response> {
       response = await importNotes(request);
     } else if (request.method === "GET" && path === "/api/export") {
       response = await exportNotes();
+    } else if (request.method === "DELETE" && path === "/api/notes") {
+      response = await deleteNote(request);
     } else {
       response = new Response("Not Found", { status: STATUS_CODE.NotFound });
     }
@@ -368,6 +505,11 @@ console.log("  POST /api/reactions - Add reaction to note");
 console.log("  GET  /api/reactions - Get available reactions");
 console.log("  POST /api/import - Import notes from NDJSON");
 console.log("  GET  /api/export - Export notes as NDJSON");
+console.log("  DELETE /api/notes - [ADMIN] Delete note(s) (requires authentication)");
 console.log("  WS   /api/ws - Real-time updates via WebSocket");
+console.log("");
+console.log("🔐 Admin Authentication:");
+console.log("  Set ADMIN_TOKEN environment variable to enable admin functions");
+console.log("  Provide token via 'Authorization: Bearer <token>' or 'X-Admin-Token: <token>' header");
 
 await serve(handleRequest, { port: 8000 });

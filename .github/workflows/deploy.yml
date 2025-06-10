@@ -1,5 +1,4 @@
 name: Deploy Cork API to Deno Deploy
-
 on:
   push:
     branches: [ main ]
@@ -10,26 +9,27 @@ jobs:
   deploy:
     name: Deploy
     runs-on: ubuntu-latest
-
     permissions:
       id-token: write
       contents: read
-
+    
     steps:
       - name: Clone repository
         uses: actions/checkout@v4
-
+      
       - name: Setup Deno
         uses: denoland/setup-deno@v1
         with:
           deno-version: v1.x
-
+      
       - name: Verify the project
         run: deno check main.ts
-
+      
       - name: Deploy to Deno Deploy
         uses: denoland/deployctl@v1
         with:
           project: "cork-board-project"
           entrypoint: "main.ts"
           root: "."
+        env:
+          ADMIN_TOKEN: ${{ secrets.ADMIN_TOKEN }}
