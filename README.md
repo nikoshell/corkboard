@@ -1,13 +1,15 @@
-# Cork Board API Usage Guide
+# Corkboard API Usage Guide
 
 ## Setup and Deployment
 
 ### Local Development
 ```bash
 # Run locally
+export ADMIN_TOKEN=${{ secrets.ADMIN_TOKEN }}
 deno run --allow-net --allow-env --allow-read --allow-write main.ts
 
 # Run with auto-reload
+export ADMIN_TOKEN=${{ secrets.ADMIN_TOKEN }}
 deno run --allow-net --allow-env --allow-read --allow-write --watch main.ts
 ```
 
@@ -76,29 +78,25 @@ curl -X POST http://localhost:8000/api/reactions \
 
 Returns list of available reaction emojis.
 
-### 5. Import Tweets
-**POST** `/api/import`
+# Delete a specific note
+curl -X DELETE "https://your-deno-deploy-url.deno.dev/api/notes" \
+  -H "Authorization: Bearer your-admin-token" \
+  -H "Content-Type: application/json" \
+  -d '{"noteId": "note-id-to-delete"}'
 
-**Content-Type:** `text/plain`
+# Delete all notes
+curl -X DELETE "https://your-deno-deploy-url.deno.dev/api/notes" \
+  -H "X-Admin-Token: your-admin-token"
 
-Upload an NDJSON file with tweets. Each line should be a valid JSON object.
 
-**Example:**
-```bash
-curl -X POST http://localhost:8000/api/import \
+curl -X POST "https://your-server.deno.dev/api/import" \
+  -H "Authorization: Bearer your-admin-token" \
   -H "Content-Type: text/plain" \
-  --data-binary @tweets.ndjson
-```
+  --data-binary @notes.ndjson
 
-### 6. Export Tweets
-**GET** `/api/export`
-
-Downloads all tweets as an NDJSON file.
-
-**Example:**
-```bash
-curl http://localhost:8000/api/export -o exported-tweets.ndjson
-```
+curl -X GET "https://your-server.deno.dev/api/export" \
+  -H "X-Admin-Token: your-admin-token" \
+  -o exported-notes.ndjson
 
 ### 7. Get Tweet Image
 **GET** `/api/images/:tweetId`
