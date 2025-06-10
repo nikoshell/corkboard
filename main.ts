@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { upgradeWebSocket } from 'hono/deno'
+import { upgradeWebSocket, WSContext } from 'hono/deno'
 import { cors } from 'hono/cors'
 
 // Types
@@ -107,15 +107,15 @@ const requireAuth = async (c: any, next: any) => {
 // WebSocket endpoint
 app.get("/api/ws", upgradeWebSocket((c) => {
   return {
-    onOpen: (evt, ws) => {
+    onOpen: (evt, ws: WebSocket) => {
       wsClients.add(ws);
       console.log("🔌 WebSocket client connected");
     },
-    onClose: (evt, ws) => {
+    onClose: (evt, ws: WebSocket) => {
       wsClients.delete(ws);
       console.log("🔌 WebSocket client disconnected");
     },
-    onError: (err, ws) => {
+    onError: (err, ws: WebSocket) => {
       console.error("🟥 WebSocket error:", err);
     }
   };
