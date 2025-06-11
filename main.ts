@@ -116,6 +116,22 @@ app.get("/api/ws", upgradeWebSocket((c:any) => {
   };
 }));
 
+app.get(
+  '/api/ws',
+  upgradeWebSocket((c) => {
+    return {
+      onOpen: (evt:any, ws:any) => {
+        wsClients.add(ws);
+        console.log("🔌 WebSocket client connected");
+      },
+      onClose: (evt:any, ws:any) => {
+        wsClients.delete(ws);
+        console.log("🔌 WebSocket client disconnected");
+      }
+    };
+  })
+)
+
 // Public routes
 app.post("/api/notes", async (c:any):Promise<any> => {
   try {

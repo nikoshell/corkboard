@@ -1,5 +1,5 @@
 {
   "imports": {
-    "hono": "npm:hono@^4.7.11"
+    "hono": "npm:hono"
   }
 }
