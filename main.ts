@@ -28,7 +28,13 @@ const REACTIONS = [
   "👍", "❤️", "😂", "😮", "😢", "😡", "🔥", "🚀", "👏", "🎉"
 ];
 
-const ADMIN_TOKEN = Deno.env.get("ADMIN_TOKEN") || "token";
+const ADMIN_TOKEN:string = Deno.env.get("ADMIN_TOKEN")!;
+
+
+if (!ADMIN_TOKEN || ADMIN_TOKEN.trim() === "") {
+  console.error("❌ GitHub Secret is not set or is empty.");
+  Deno.exit(1); // Exit with failure code
+}
 
 // Initialize
 const app = new Hono();
