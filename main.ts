@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { upgradeWebSocket, WSContext } from 'hono/deno'
+import { upgradeWebSocket } from 'hono/deno'
 import { cors } from 'hono/cors'
 
 // Types
@@ -28,21 +28,14 @@ const REACTIONS = [
   "👍", "❤️", "😂", "😮", "😢", "😡", "🔥", "🚀", "👏", "🎉"
 ];
 
-const ADMIN_TOKEN = Deno.env.get("ADMIN_TOKEN");
+const ADMIN_TOKEN = Deno.env.get("ADMIN_TOKEN") || "token";
 
 // Initialize
 const app = new Hono();
-let kv: Deno.Kv;
-try {
-  kv = await Deno.openKv();
-  console.log("🗄️  Deno KV database initialized successfully");
-} catch (e) {
-  console.error("❌ Failed to initialize Deno KV:", e);
-  throw new Error("KV initialization failed");
-}
-
+const kv = await Deno.openKv();
 const wsClients = new Set<WebSocket>();
 
+console.log("🗄️  Deno KV database initialized successfully");
 if (ADMIN_TOKEN) {
   console.log("🔐 Admin authentication enabled");
 } else {
@@ -74,7 +67,7 @@ const extractToken = (c: any): string | null => {
 };
 
 const isValidAdmin = (token: string): boolean => {
-  return !!ADMIN_TOKEN && token === ADMIN_TOKEN;
+  return (ADMIN_TOKEN && token === ADMIN_TOKEN)? true : false; 
 };
 
 // Middleware
@@ -105,24 +98,21 @@ const requireAuth = async (c: any, next: any) => {
 };
 
 // WebSocket endpoint
-app.get("/api/ws", upgradeWebSocket((c) => {
+app.get("/api/ws", upgradeWebSocket((c:any) => {
   return {
-    onOpen: (evt, ws: WebSocket) => {
+    onOpen: (evt:any, ws:any) => {
       wsClients.add(ws);
       console.log("🔌 WebSocket client connected");
     },
-    onClose: (evt, ws: WebSocket) => {
+    onClose: (evt:any, ws:any) => {
       wsClients.delete(ws);
       console.log("🔌 WebSocket client disconnected");
-    },
-    onError: (err, ws: WebSocket) => {
-      console.error("🟥 WebSocket error:", err);
     }
   };
 }));
 
 // Public routes
-app.post("/api/notes", async (c) => {
+app.post("/api/notes", async (c:any):Promise<any> => {
   try {
     console.log("📝 Creating new note...");
     const formData = await c.req.formData();
@@ -148,16 +138,16 @@ app.post("/api/notes", async (c) => {
 
     console.log(`✅ Note created: ${note.id}`);
     return c.json(note, 201);
-  } catch (error) {
+  } catch (error:any) {
     console.error("❌ Failed to create note:", error);
     return c.json({ 
       error: "Failed to create note", 
-      details: error instanceof Error ? error.message : String(error)
+      details: error.message 
     }, 500);
   }
 });
 
-app.get("/api/notes", async (c) => {
+app.get("/api/notes", async (c:any):Promise<any> => {
   try {
     console.log("📋 Fetching all notes...");
     const notes: Note[] = [];
@@ -169,16 +159,16 @@ app.get("/api/notes", async (c) => {
     notes.sort((a, b) => b.timestamp - a.timestamp);
     console.log(`✅ Found ${notes.length} notes`);
     return c.json(notes);
-  } catch (error) {
+  } catch (error:any) {
     console.error("❌ Failed to get notes:", error);
     return c.json({ 
       error: "Failed to get notes", 
-      details: error instanceof Error ? error.message : String(error)
+      details: error.message 
     }, 500);
   }
 });
 
-app.post("/api/reactions", async (c) => {
+app.post("/api/reactions", async (c: any): Promise<any> => {
   try {
     console.log("👍 Adding reaction...");
     const { noteId, reaction } = await c.req.json() as ReactionInput;
@@ -207,11 +197,11 @@ app.post("/api/reactions", async (c) => {
 
     console.log(`✅ Reaction added to note: ${noteId}`);
     return c.json(note);
-  } catch (error) {
+  } catch (error:any) {
     console.error("❌ Failed to add reaction:", error);
     return c.json({ 
       error: "Failed to add reaction", 
-      details: error instanceof Error ? error.message : String(error)
+      details: error.message 
     }, 500);
   }
 });
@@ -224,7 +214,7 @@ app.get("/api/reactions", (c) => {
 app.delete("/api/notes", requireAuth, async (c) => {
   try {
     console.log("🗑️  Processing delete request...");
-    let body;
+    let body:any;
     try {
       body = await c.req.json();
     } catch {
@@ -258,11 +248,11 @@ app.delete("/api/notes", requireAuth, async (c) => {
       console.log(`✅ All notes deleted. Count: ${deletedCount}`);
       return c.json({ message: "All notes deleted successfully", deletedCount });
     }
-  } catch (error) {
+  } catch (error:any) {
     console.error("❌ Failed to delete note(s):", error);
     return c.json({ 
       error: "Failed to delete note(s)", 
-      details: error instanceof Error ? error.message : String(error)
+      details: error.message 
     }, 500);
   }
 });
@@ -289,9 +279,9 @@ app.post("/api/import", requireAuth, async (c) => {
         };
         await kv.set(["notes", note.id], note);
         imported++;
-      } catch (lineError) {
+      } catch (lineError:any) {
         failed++;
-        console.error(`❌ Failed to parse line ${index + 1}:`, lineError instanceof Error ? lineError.message : String(lineError));
+        console.error(`❌ Failed to parse line ${index + 1}:`, lineError.message);
       }
     }
 
@@ -301,11 +291,11 @@ app.post("/api/import", requireAuth, async (c) => {
       successful: imported, 
       failed 
     });
-  } catch (error) {
+  } catch (error:any) {
     console.error("❌ Failed to import notes:", error);
     return c.json({ 
       error: "Failed to import notes", 
-      details: error instanceof Error ? error.message : String(error)
+      details: error.message 
     }, 500);
   }
 });
@@ -327,11 +317,11 @@ app.get("/api/export", requireAuth, async (c) => {
       "Content-Type": "application/x-ndjson",
       "Content-Disposition": "attachment; filename=notes.ndjson"
     });
-  } catch (error) {
+  } catch (error:any) {
     console.error("❌ Failed to export notes:", error);
     return c.json({ 
       error: "Failed to export notes", 
-      details: error instanceof Error ? error.message : String(error)
+      details: error.message 
     }, 500);
   }
 });
