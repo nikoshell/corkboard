@@ -76,7 +76,7 @@ const isValidAdmin = (token: string): boolean => {
 };
 
 // Middleware
-app.use("*", cors({
+app.use("/api/*", cors({
   origin: "*",
   allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
   allowHeaders: ["Content-Type", "Authorization", "X-Admin-Token"]
@@ -103,7 +103,7 @@ const requireAuth = async (c: any, next: any) => {
 };
 
 // WebSocket endpoint
-app.get("/api/ws", upgradeWebSocket((c:any) => {
+app.get("/ws", upgradeWebSocket((c:any) => {
   return {
     onOpen: (evt:any, ws:any) => {
       wsClients.add(ws);
@@ -115,22 +115,6 @@ app.get("/api/ws", upgradeWebSocket((c:any) => {
     }
   };
 }));
-
-app.get(
-  '/api/ws',
-  upgradeWebSocket((c) => {
-    return {
-      onOpen: (evt:any, ws:any) => {
-        wsClients.add(ws);
-        console.log("🔌 WebSocket client connected");
-      },
-      onClose: (evt:any, ws:any) => {
-        wsClients.delete(ws);
-        console.log("🔌 WebSocket client disconnected");
-      }
-    };
-  })
-)
 
 // Public routes
 app.post("/api/notes", async (c:any):Promise<any> => {
