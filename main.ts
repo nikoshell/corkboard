@@ -23,24 +23,37 @@ interface ReactionInput {
   reaction: string;
 }
 
+interface RateLimitEntry {
+  count: number;
+  lastRequest: number;
+  blacklisted?: boolean;
+  blacklistedAt?: number;
+}
+
 // Constants
 const REACTIONS = [
   "👍", "❤️", "😂", "😮", "😢", "😡", "🔥", "🚀", "👏", "🎉"
 ];
 
-const ADMIN_TOKEN:string = Deno.env.get("ADMIN_TOKEN")!;
+const ADMIN_TOKEN: string = Deno.env.get("ADMIN_TOKEN")!;
 
+// Rate limiting configuration
+const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
+const RATE_LIMIT_MAX_REQUESTS = 30; // Max requests per window
+const ABUSE_THRESHOLD = 100; // Blacklist after this many requests in window
+const BLACKLIST_DURATION = 60 * 60 * 1000; // 1 hour
 
 if (!ADMIN_TOKEN || ADMIN_TOKEN.trim() === "") {
-  console.error("❌ GitHub Secret is not set or is empty.");
+  console.error("❌ ADMIN_TOKEN is not set or is empty.");
 }
 
 // Initialize
 const app = new Hono();
 const kv = await Deno.openKv();
 const wsClients = new Set<WebSocket>();
+const rateLimitMap = new Map<string, RateLimitEntry>();
 
-console.log("🗄️  Deno KV database initialized successfully");
+console.log("🚀 Server initialized");
 if (ADMIN_TOKEN) {
   console.log("🔐 Admin authentication enabled");
 } else {
@@ -72,7 +85,94 @@ const extractToken = (c: any): string | null => {
 };
 
 const isValidAdmin = (token: string): boolean => {
-  return (ADMIN_TOKEN && token === ADMIN_TOKEN)? true : false; 
+  return (ADMIN_TOKEN && token === ADMIN_TOKEN) ? true : false;
+};
+
+const getClientIP = (c: any): string => {
+  // Try various headers for getting real client IP
+  return c.req.header("CF-Connecting-IP") || 
+         c.req.header("X-Forwarded-For")?.split(',')[0]?.trim() ||
+         c.req.header("X-Real-IP") ||
+         c.req.header("Remote-Addr") ||
+         "unknown";
+};
+
+const checkRateLimit = (ip: string): { allowed: boolean; shouldBlacklist: boolean } => {
+  const now = Date.now();
+  const entry = rateLimitMap.get(ip);
+
+  if (!entry) {
+    rateLimitMap.set(ip, { count: 1, lastRequest: now });
+    return { allowed: true, shouldBlacklist: false };
+  }
+
+  // Check if IP is already blacklisted
+  if (entry.blacklisted) {
+    const timeSinceBlacklist = now - (entry.blacklistedAt || 0);
+    if (timeSinceBlacklist < BLACKLIST_DURATION) {
+      return { allowed: false, shouldBlacklist: false };
+    } else {
+      // Remove from blacklist after duration
+      entry.blacklisted = false;
+      entry.blacklistedAt = undefined;
+      entry.count = 1;
+      entry.lastRequest = now;
+      rateLimitMap.set(ip, entry);
+      console.log(`🔓 IP ${ip} removed from blacklist`);
+      return { allowed: true, shouldBlacklist: false };
+    }
+  }
+
+  // Reset counter if window has passed
+  if (now - entry.lastRequest > RATE_LIMIT_WINDOW) {
+    entry.count = 1;
+    entry.lastRequest = now;
+    rateLimitMap.set(ip, entry);
+    return { allowed: true, shouldBlacklist: false };
+  }
+
+  entry.count++;
+  entry.lastRequest = now;
+  rateLimitMap.set(ip, entry);
+
+  // Check for abuse
+  if (entry.count > ABUSE_THRESHOLD) {
+    entry.blacklisted = true;
+    entry.blacklistedAt = now;
+    rateLimitMap.set(ip, entry);
+    console.log(`🚫 IP ${ip} blacklisted for abuse (${entry.count} requests)`);
+    return { allowed: false, shouldBlacklist: true };
+  }
+
+  // Check normal rate limit
+  if (entry.count > RATE_LIMIT_MAX_REQUESTS) {
+    return { allowed: false, shouldBlacklist: false };
+  }
+
+  return { allowed: true, shouldBlacklist: false };
+};
+
+// Rate limiting middleware
+const rateLimitMiddleware = async (c: any, next: any) => {
+  const ip = getClientIP(c);
+  const { allowed, shouldBlacklist } = checkRateLimit(ip);
+
+  if (!allowed) {
+    const entry = rateLimitMap.get(ip);
+    if (entry?.blacklisted) {
+      return c.json({ 
+        error: "IP blacklisted due to abuse",
+        retryAfter: BLACKLIST_DURATION / 1000
+      }, 429);
+    } else {
+      return c.json({ 
+        error: "Rate limit exceeded",
+        retryAfter: RATE_LIMIT_WINDOW / 1000
+      }, 429);
+    }
+  }
+
+  await next();
 };
 
 // Middleware
@@ -81,6 +181,9 @@ app.use("/api/*", cors({
   allowMethods: ["GET", "POST", "DELETE", "OPTIONS"],
   allowHeaders: ["Content-Type", "Authorization", "X-Admin-Token"]
 }));
+
+// Apply rate limiting to all API routes
+app.use("/api/*", rateLimitMiddleware);
 
 // Auth middleware for admin routes
 const requireAuth = async (c: any, next: any) => {
@@ -103,23 +206,20 @@ const requireAuth = async (c: any, next: any) => {
 };
 
 // WebSocket endpoint
-app.get("/ws", upgradeWebSocket((c:any) => {
+app.get("/ws", upgradeWebSocket((c: any) => {
   return {
-    onOpen: (evt:any, ws:any) => {
+    onOpen: (evt: any, ws: any) => {
       wsClients.add(ws);
-      console.log("🔌 WebSocket client connected");
     },
-    onClose: (evt:any, ws:any) => {
+    onClose: (evt: any, ws: any) => {
       wsClients.delete(ws);
-      console.log("🔌 WebSocket client disconnected");
     }
   };
 }));
 
 // Public routes
-app.post("/api/notes", async (c:any):Promise<any> => {
+app.post("/api/notes", async (c: any): Promise<any> => {
   try {
-    console.log("📝 Creating new note...");
     const formData = await c.req.formData();
     const displayName = formData.get("displayName") as string;
     const handle = formData.get("handle") as string;
@@ -141,10 +241,9 @@ app.post("/api/notes", async (c:any):Promise<any> => {
     await kv.set(["notes", note.id], note);
     broadcast({ type: "note-created", data: note });
 
-    console.log(`✅ Note created: ${note.id}`);
     return c.json(note, 201);
-  } catch (error:any) {
-    console.error("❌ Failed to create note:", error);
+  } catch (error: any) {
+    console.error("Failed to create note:", error.message);
     return c.json({ 
       error: "Failed to create note", 
       details: error.message 
@@ -152,9 +251,8 @@ app.post("/api/notes", async (c:any):Promise<any> => {
   }
 });
 
-app.get("/api/notes", async (c:any):Promise<any> => {
+app.get("/api/notes", async (c: any): Promise<any> => {
   try {
-    console.log("📋 Fetching all notes...");
     const notes: Note[] = [];
     
     for await (const entry of kv.list({ prefix: ["notes"] })) {
@@ -162,10 +260,9 @@ app.get("/api/notes", async (c:any):Promise<any> => {
     }
     
     notes.sort((a, b) => b.timestamp - a.timestamp);
-    console.log(`✅ Found ${notes.length} notes`);
     return c.json(notes);
-  } catch (error:any) {
-    console.error("❌ Failed to get notes:", error);
+  } catch (error: any) {
+    console.error("Failed to get notes:", error.message);
     return c.json({ 
       error: "Failed to get notes", 
       details: error.message 
@@ -175,7 +272,6 @@ app.get("/api/notes", async (c:any):Promise<any> => {
 
 app.post("/api/reactions", async (c: any): Promise<any> => {
   try {
-    console.log("👍 Adding reaction...");
     const { noteId, reaction } = await c.req.json() as ReactionInput;
 
     if (!noteId || !reaction) {
@@ -200,10 +296,9 @@ app.post("/api/reactions", async (c: any): Promise<any> => {
     await kv.set(["notes", noteId], note);
     broadcast({ type: "reaction-added", data: note });
 
-    console.log(`✅ Reaction added to note: ${noteId}`);
     return c.json(note);
-  } catch (error:any) {
-    console.error("❌ Failed to add reaction:", error);
+  } catch (error: any) {
+    console.error("Failed to add reaction:", error.message);
     return c.json({ 
       error: "Failed to add reaction", 
       details: error.message 
@@ -218,8 +313,7 @@ app.get("/api/reactions", (c) => {
 // Admin routes (protected)
 app.delete("/api/notes", requireAuth, async (c) => {
   try {
-    console.log("🗑️  Processing delete request...");
-    let body:any;
+    let body: any;
     try {
       body = await c.req.json();
     } catch {
@@ -238,7 +332,6 @@ app.delete("/api/notes", requireAuth, async (c) => {
       await kv.delete(["notes", noteId]);
       broadcast({ type: "note-deleted", data: { noteId } });
 
-      console.log(`✅ Note deleted: ${noteId}`);
       return c.json({ message: "Note deleted successfully", noteId });
     } else {
       // Delete all notes
@@ -250,11 +343,10 @@ app.delete("/api/notes", requireAuth, async (c) => {
 
       broadcast({ type: "all-notes-deleted", data: { deletedCount } });
 
-      console.log(`✅ All notes deleted. Count: ${deletedCount}`);
       return c.json({ message: "All notes deleted successfully", deletedCount });
     }
-  } catch (error:any) {
-    console.error("❌ Failed to delete note(s):", error);
+  } catch (error: any) {
+    console.error("Failed to delete note(s):", error.message);
     return c.json({ 
       error: "Failed to delete note(s)", 
       details: error.message 
@@ -264,7 +356,6 @@ app.delete("/api/notes", requireAuth, async (c) => {
 
 app.post("/api/import", requireAuth, async (c) => {
   try {
-    console.log("📥 Importing notes from NDJSON...");
     const body = await c.req.text();
     const lines = body.trim().split('\n');
     let imported = 0;
@@ -284,20 +375,19 @@ app.post("/api/import", requireAuth, async (c) => {
         };
         await kv.set(["notes", note.id], note);
         imported++;
-      } catch (lineError:any) {
+      } catch (lineError: any) {
         failed++;
-        console.error(`❌ Failed to parse line ${index + 1}:`, lineError.message);
+        console.error(`Failed to parse line ${index + 1}:`, lineError.message);
       }
     }
 
-    console.log(`✅ Import completed: ${imported} successful, ${failed} failed`);
     return c.json({ 
       message: `Imported ${imported} notes`, 
       successful: imported, 
       failed 
     });
-  } catch (error:any) {
-    console.error("❌ Failed to import notes:", error);
+  } catch (error: any) {
+    console.error("Failed to import notes:", error.message);
     return c.json({ 
       error: "Failed to import notes", 
       details: error.message 
@@ -307,7 +397,6 @@ app.post("/api/import", requireAuth, async (c) => {
 
 app.get("/api/export", requireAuth, async (c) => {
   try {
-    console.log("📤 Exporting notes to NDJSON...");
     const notes: Note[] = [];
     
     for await (const entry of kv.list({ prefix: ["notes"] })) {
@@ -317,15 +406,80 @@ app.get("/api/export", requireAuth, async (c) => {
     notes.sort((a, b) => a.timestamp - b.timestamp);
     const ndjson = notes.map(note => JSON.stringify(note)).join('\n');
 
-    console.log("✅ Export completed successfully");
     return c.body(ndjson, 200, {
       "Content-Type": "application/x-ndjson",
       "Content-Disposition": "attachment; filename=notes.ndjson"
     });
-  } catch (error:any) {
-    console.error("❌ Failed to export notes:", error);
+  } catch (error: any) {
+    console.error("Failed to export notes:", error.message);
     return c.json({ 
       error: "Failed to export notes", 
+      details: error.message 
+    }, 500);
+  }
+});
+
+// Admin endpoint to view blacklisted IPs
+app.get("/api/admin/blacklist", requireAuth, async (c) => {
+    const blacklistedIPs: {
+      ip: string;
+      blacklistedAt: number;
+      timeRemaining: number;
+      requestCount: number;
+    }[] = [];
+  const now = Date.now();
+  
+  for (const [ip, entry] of rateLimitMap.entries()) {
+    if (entry.blacklisted) {
+      const timeRemaining = BLACKLIST_DURATION - (now - (entry.blacklistedAt || 0));
+      if (timeRemaining > 0) {
+        blacklistedIPs.push({
+          ip,
+          blacklistedAt: entry.blacklistedAt,
+          timeRemaining: Math.ceil(timeRemaining / 1000),
+          requestCount: entry.count
+        });
+      }
+    }
+  }
+  
+  return c.json({ blacklistedIPs });
+});
+
+// Admin endpoint to manually blacklist/unblacklist IPs
+app.post("/api/admin/blacklist", requireAuth, async (c) => {
+  try {
+    const { ip, action } = await c.req.json();
+    
+    if (!ip || !action) {
+      return c.json({ error: "ip and action are required" }, 400);
+    }
+    
+    if (action === "blacklist") {
+      const entry = rateLimitMap.get(ip) || { count: 0, lastRequest: Date.now() };
+      entry.blacklisted = true;
+      entry.blacklistedAt = Date.now();
+      rateLimitMap.set(ip, entry);
+      console.log(`🚫 IP ${ip} manually blacklisted`);
+      return c.json({ message: `IP ${ip} blacklisted successfully` });
+    } else if (action === "unblacklist") {
+      const entry = rateLimitMap.get(ip);
+      if (entry) {
+        entry.blacklisted = false;
+        entry.blacklistedAt = undefined;
+        rateLimitMap.set(ip, entry);
+        console.log(`🔓 IP ${ip} manually unblacklisted`);
+        return c.json({ message: `IP ${ip} unblacklisted successfully` });
+      } else {
+        return c.json({ error: "IP not found in rate limit records" }, 404);
+      }
+    } else {
+      return c.json({ error: "Invalid action. Use 'blacklist' or 'unblacklist'" }, 400);
+    }
+  } catch (error: any) {
+    console.error("Failed to manage blacklist:", error.message);
+    return c.json({ 
+      error: "Failed to manage blacklist", 
       details: error.message 
     }, 500);
   }
@@ -341,21 +495,5 @@ app.onError((err, c) => {
   console.error("Unhandled error:", err);
   return c.json({ error: "Internal server error" }, 500);
 });
-
-// Start info
-console.log("🚀 Note-taking API server starting...");
-console.log("📚 Available endpoints:");
-console.log("  POST /api/notes - Create a new note");
-console.log("  GET  /api/notes - Get all notes");
-console.log("  POST /api/reactions - Add reaction to note");
-console.log("  GET  /api/reactions - Get available reactions");
-console.log("  DELETE /api/notes - [ADMIN] Delete note(s)");
-console.log("  POST /api/import - [ADMIN] Import notes from NDJSON");
-console.log("  GET  /api/export - [ADMIN] Export notes as NDJSON");
-console.log("  WS   /api/ws - Real-time updates via WebSocket");
-console.log("");
-console.log("🔐 Admin Authentication:");
-console.log("  Set ADMIN_TOKEN environment variable to enable admin functions");
-console.log("  Provide token via 'Authorization: Bearer <token>' or 'X-Admin-Token: <token>' header");
 
 export default app;

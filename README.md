@@ -163,3 +163,23 @@ curl http://localhost:8000/api/images/some-tweet-id -o tweet-image.jpg
 ## CORS Support
 
 The API includes CORS headers to allow frontend applications to interact with it from different domains.
+
+```
+
+// Start info
+console.log("🚀 Note-taking API server starting...");
+console.log("📚 Available endpoints:");
+console.log("  POST /api/notes - Create a new note");
+console.log("  GET  /api/notes - Get all notes");
+console.log("  POST /api/reactions - Add reaction to note");
+console.log("  GET  /api/reactions - Get available reactions");
+console.log("  DELETE /api/notes - [ADMIN] Delete note(s)");
+console.log("  POST /api/import - [ADMIN] Import notes from NDJSON");
+console.log("  GET  /api/export - [ADMIN] Export notes as NDJSON");
+console.log("  WS   /api/ws - Real-time updates via WebSocket");
+console.log("");
+console.log("🔐 Admin Authentication:");
+console.log("  Set ADMIN_TOKEN environment variable to enable admin functions");
+console.log("  Provide token via 'Authorization: Bearer <token>' or 'X-Admin-Token: <token>' header");
+
+```
